@@ -1,32 +1,52 @@
-type DailyReadinessData = {
+type DailyReadiness = {
   day: string;
   score: number;
 };
 
-type DailyReadiness = {
-  data: DailyReadinessData[];
+type DailyReadinessResponse = {
+  data: DailyReadiness[];
 };
+
+type DailySleep = {
+  day: string;
+  score: number;
+};
+
+type DailySleepResponse = {
+  data: DailySleep[];
+};
+
+type Session = {
+  start_datetime: string;
+  end_datetime: string;
+};
+
+type SessionResponse = {
+  data: Session[];
+};
+
+const OURA_RING_HOST = "https://api.ouraring.com/v2";
 
 const props = PropertiesService.getScriptProperties().getProperties();
 
 const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheets()[0];
 
 function main() {
-  const dailyReadiness = getDailyReadiness();
-  const data = dailyReadiness.data.at(-1);
-  if (data === undefined) {
+  const latestReadness = getDailyReadiness().data.at(-1);
+  if (latestReadness === undefined) {
     return;
   }
 
-  const lastRow = sheet.getLastRow();
-  if (lastRow === 0) {
-    return update(data);
+  const latestSleep = getDailySleep().data.at(-1);
+  if (latestSleep === undefined) {
+    return;
   }
 
-  const latest = sheet.getRange(lastRow, 1, lastRow + 1, 2).getValues()[0];
-  const day = Utilities.formatDate(latest[0], "JST", "yyyy-MM-dd");
-  if (day !== data.day || latest[1] !== data.score) {
-    return update(data);
+  const sessions = getSession().data;
+  const sessionTime = calcSessionTime(sessions);
+
+  if (canPost(latestReadness.day)) {
+    post(latestReadness, latestSleep, sessionTime);
   }
 }
 
@@ -40,22 +60,23 @@ function doGet(e: any) {
   return output;
 }
 
-function update(data: DailyReadinessData) {
-  const iconNo = getIconNo(data);
+function post(latestRediness: DailyReadiness, latestSleep: DailySleep, sessionTime: number) {
+  const iconNo = getIconNo(latestRediness);
   const emoji = `:condition_${iconNo}:`;
-  postToSlack(`${emoji} ${data.score}点`);
-  updateSlackStatus(`${emoji}`, `${data.score}点`);
+  var text = `${emoji} (コンディション: ${latestRediness.score}点, 睡眠: ${latestSleep.score}点`;
+  text += sessionTime === 0 ? ")" : `, 瞑想: ${sessionTime}分)`;
+  postToSlack(text);
+  updateSlackStatus(`${emoji}`, `${latestRediness.score}点`);
 
-  const setValues = [[data.day, data.score]];
-  const lastRow = sheet.getDataRange().getLastRow();
-  sheet.getRange(lastRow + 1, 1, 1, setValues.length + 1).setValues(setValues);
+  const values = [[latestRediness.day, latestRediness.score, latestSleep.score, sessionTime]];
+  const row = sheet.getLastRow() === 0 ? 1 : sheet.getDataRange().getLastRow() + 1;
+  sheet.getRange(row, 1, 1, values[0].length).setValues(values);
 }
 
-function getDailyReadiness(): DailyReadiness {
-  const host = "https://api.ouraring.com/v2";
+function getDailyReadiness(): DailyReadinessResponse {
   const start_date = Utilities.formatDate(new Date(), "Asia/Tokyo", "yyyy-MM-dd");
   const end_date = Utilities.formatDate(getTomorrow(), "Asia/Tokyo", "yyyy-MM-dd");
-  const url = host + `/usercollection/daily_readiness?start_date=${start_date}&end_date=${end_date}`;
+  const url = `${OURA_RING_HOST}/usercollection/daily_readiness?start_date=${start_date}&end_date=${end_date}`;
 
   const params: GoogleAppsScript.URL_Fetch.URLFetchRequestOptions = {
     method: "get",
@@ -64,8 +85,67 @@ function getDailyReadiness(): DailyReadiness {
   };
 
   const contents = UrlFetchApp.fetch(url, params).getContentText();
-  const dailyReadiness = JSON.parse(contents) as DailyReadiness;
-  return dailyReadiness;
+  const response = JSON.parse(contents) as DailyReadinessResponse;
+  return response;
+}
+
+function getDailySleep(): DailySleepResponse {
+  const start_date = Utilities.formatDate(new Date(), "Asia/Tokyo", "yyyy-MM-dd");
+  const end_date = Utilities.formatDate(getTomorrow(), "Asia/Tokyo", "yyyy-MM-dd");
+  const url = `${OURA_RING_HOST}/usercollection/daily_sleep?start_date=${start_date}&end_date=${end_date}`;
+
+  const params: GoogleAppsScript.URL_Fetch.URLFetchRequestOptions = {
+    method: "get",
+    contentType: "application/json",
+    headers: { Authorization: `Bearer ${props.OURA_RING_TOKEN}` },
+  };
+
+  const contents = UrlFetchApp.fetch(url, params).getContentText();
+  const response = JSON.parse(contents) as DailySleepResponse;
+  return response;
+}
+
+function getSession(): SessionResponse {
+  const start_date = Utilities.formatDate(getYesterday(), "Asia/Tokyo", "yyyy-MM-dd");
+  const end_date = Utilities.formatDate(new Date(), "Asia/Tokyo", "yyyy-MM-dd");
+  const url = `${OURA_RING_HOST}/usercollection/session?start_date=${start_date}&end_date=${end_date}`;
+
+  const params: GoogleAppsScript.URL_Fetch.URLFetchRequestOptions = {
+    method: "get",
+    contentType: "application/json",
+    headers: { Authorization: `Bearer ${props.OURA_RING_TOKEN}` },
+  };
+
+  const contents = UrlFetchApp.fetch(url, params).getContentText();
+  const response = JSON.parse(contents) as SessionResponse;
+  return response;
+}
+
+function calcSessionTime(sessions: Session[]): number {
+  if (sessions.length === 0) {
+    return 0;
+  }
+
+  return sessions
+    .map((session) => {
+      const diff = new Date(session.end_datetime).getTime() - new Date(session.start_datetime).getTime();
+      const minute = diff / 1000 / 60;
+      return Math.round(minute);
+    })
+    .reduce((sum, element) => {
+      return sum + element;
+    }, 0);
+}
+
+function canPost(registeredDay: string): boolean {
+  const lastRow = sheet.getLastRow();
+  if (lastRow === 0) {
+    return true;
+  }
+
+  const data = sheet.getRange(lastRow, 1, lastRow + 1, 2).getValues()[0][0];
+  const latestDay = Utilities.formatDate(data, "JST", "yyyy-MM-dd");
+  return latestDay !== registeredDay;
 }
 
 function getTomorrow(): Date {
@@ -74,7 +154,13 @@ function getTomorrow(): Date {
   return tomorrow;
 }
 
-function getIconNo(data: DailyReadinessData): number {
+function getYesterday(): Date {
+  var date = new Date();
+  date.setDate(new Date().getDate() - 1);
+  return date;
+}
+
+function getIconNo(data: DailyReadiness): number {
   if (data.score >= 85) {
     return 1;
   } else if (data.score >= 75) {
