@@ -6,7 +6,7 @@ Oura Ring で計測されたコンディションスコアを Slack に反映さ
 
 ![bot.png](./docs/bot.png)
 
-詳しくは[【Oura Ring】自分の体調を Slack プロフィールに同期した話【GAS】](https://github.com/meokz/oura-ring-for-slack-status)をご参照ください。
+詳しくは[【Oura Ring】自分の体調を Slack プロフィールに同期した話【GAS】](https://meokz.hatenablog.com/entry/2023/04/11/165920)をご参照ください。
 
 ## Install
 
